@@ -318,6 +318,47 @@ static void runProgram(SimpleCommand *s)
 }
 // END runprogram
 
+
+// BEGIN redirect
+static int openOrDie(const char *path, int flags)
+{
+    int fd = open(path, flags, 0644);
+    if (fd < 0)
+    {
+        fprintf(stderr, "myshell: %s: %s\n", path, strerror(errno));
+        _exit(1);
+    }
+    return fd;
+}
+
+static void applyRedirections(Command *c, bool first, bool last)
+{
+    if (first && c->_inputFile)
+    {
+        int fd = openOrDie(c->_inputFile, O_RDONLY);
+        dup2(fd, 0);
+        close(fd);
+    }
+
+    if (last && c->_outFile)
+    {
+        int flags = O_WRONLY | O_CREAT | (c->_append ? O_APPEND : O_TRUNC);
+        int fd = openOrDie(c->_outFile, flags);
+        dup2(fd, 1);
+        if (c->_out_error)
+            dup2(fd, 2);
+        close(fd);
+    }
+
+    if (c->_errFile && !c->_out_error)
+    {
+        int fd = openOrDie(c->_errFile, O_WRONLY | O_CREAT | O_TRUNC);
+        dup2(fd, 2);
+        close(fd);
+    }
+}
+// END redirect
+
 // BEGIN execute
 void Command::execute()
 {
@@ -342,6 +383,7 @@ void Command::execute()
     }
     else if (pid == 0)
     {
+        applyRedirections(this, true, true);
         runProgram(_simpleCommands[0]);
     }
     else if (_background)
