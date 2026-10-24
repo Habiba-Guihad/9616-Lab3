@@ -17,6 +17,7 @@
 
 void parse(std::vector<Token> &tokens);
 // PROTOTYPES (later steps add lines below this one)
+static void addArgument(SimpleCommand *s, const std::string &word);
 static bool runBuiltin(Command *c);
 static void waitForChild(pid_t pid);
 static void runProgram(SimpleCommand *s);
@@ -54,7 +55,7 @@ void parse(std::vector<Token> &tokens)
                 simple = new SimpleCommand();
                 cmd.insertSimpleCommand(simple);
             }
-            simple->insertArgument(strdup(t.value.c_str()));
+            addArgument(simple, t.value);
             break;
 
         case TOKEN_PIPE:
@@ -511,3 +512,26 @@ int main()
     return 0;
 }
 // END prompt
+
+// BEGIN wildcard
+static void addArgument(SimpleCommand *s, const std::string &word)
+{
+    if (word.find_first_of("*?") == std::string::npos)
+    {
+        s->insertArgument(strdup(word.c_str()));
+        return;
+    }
+
+    glob_t g;
+    if (glob(word.c_str(), GLOB_NOCHECK, NULL, &g) == 0)
+    {
+        for (size_t k = 0; k < g.gl_pathc; k++)
+            s->insertArgument(strdup(g.gl_pathv[k]));
+        globfree(&g);
+    }
+    else
+    {
+        s->insertArgument(strdup(word.c_str()));
+    }
+}
+// END wildcard
