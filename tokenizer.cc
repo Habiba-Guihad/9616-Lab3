@@ -1,63 +1,112 @@
 #include "tokenizer.h"
-#include <sstream>
-#include <iostream>
+#include <cctype>
 
 std::vector<Token> tokenize(const std::string &input)
 {
     std::vector<Token> tokens;
-    std::istringstream stream(input);
-    std::string word;
+    size_t i = 0, n = input.size();
+    bool expectCommand = true;
+    bool afterRedirect = false;
 
-    while (stream >> word)
+    while (i < n)
     {
+        if (isspace((unsigned char)input[i]))
+        {
+            i++;
+            continue;
+        }
+
         Token token;
+        char c = input[i];
 
-        if (word == "|")
+        if (c == '|')
+        {
             token.type = TOKEN_PIPE;
-        else if (word == ">")
-            token.type = TOKEN_REDIRECT;
-        else if (word == ">>")
-            token.type = TOKEN_APPEND;
-        else if (word == "<")
+            token.value = "|";
+            i++;
+            expectCommand = true;
+            afterRedirect = false;
+        }
+        else if (c == '<')
+        {
             token.type = TOKEN_INPUT;
-        else if (word == "&")
+            token.value = "<";
+            i++;
+            afterRedirect = true;
+        }
+        else if (c == '&')
+        {
             token.type = TOKEN_BACKGROUND;
-        else if (word == "2>")
-            token.type = TOKEN_ERROR;
-        else if (word == ">>&")
-            token.type = TOKEN_REDIRECT_AND_ERROR;
-        else
+            token.value = "&";
+            i++;
+            afterRedirect = false;
+        }
+        else if (c == '>')
+        {
+            if (input.compare(i, 3, ">>&") == 0)
             {
-                if (!tokens.empty())
+                token.type = TOKEN_REDIRECT_AND_ERROR;
+                token.value = ">>&";
+                i += 3;
+            }
+            else if (input.compare(i, 2, ">>") == 0)
+            {
+                token.type = TOKEN_APPEND;
+                token.value = ">>";
+                i += 2;
+            }
+            else
+            {
+                token.type = TOKEN_REDIRECT;
+                token.value = ">";
+                i++;
+            }
+            afterRedirect = true;
+        }
+        else if (c == '2' && i + 1 < n && input[i + 1] == '>')
+        {
+            token.type = TOKEN_ERROR;
+            token.value = "2>";
+            i += 2;
+            afterRedirect = true;
+        }
+        else
+        {
+            std::string word;
+            while (i < n && !isspace((unsigned char)input[i]) &&
+                   input[i] != '|' && input[i] != '<' &&
+                   input[i] != '>' && input[i] != '&')
+            {
+                if (input[i] == '"' || input[i] == '\'')
                 {
-                    Token &prev = tokens.back();
-                    if (prev.type == TOKEN_REDIRECT ||
-                        prev.type == TOKEN_APPEND ||
-                        prev.type == TOKEN_INPUT ||
-                        prev.type == TOKEN_ERROR || 
-                        prev.type == TOKEN_REDIRECT_AND_ERROR ||
-                        prev.type == TOKEN_COMMAND || 
-                        prev.type == TOKEN_ARGUMENT || 
-                        word[0] == '-' ||
-                        word.find('/') != std::string::npos ||
-                        word.find('.') != std::string::npos
-
-                    )
-                    {
-                        token.type = TOKEN_ARGUMENT;
-                    }
-                    else
-                    {
-                        token.type = TOKEN_COMMAND;
-                    }
+                    char q = input[i++];
+                    while (i < n && input[i] != q)
+                        word += input[i++];
+                    if (i < n)
+                        i++;
                 }
                 else
                 {
-                    token.type = TOKEN_COMMAND;
+                    word += input[i++];
                 }
             }
 
-        token.value = word;
+            if (afterRedirect)
+            {
+                token.type = TOKEN_ARGUMENT;
+                afterRedirect = false;
+            }
+            else if (expectCommand)
+            {
+                token.type = TOKEN_COMMAND;
+                expectCommand = false;
+            }
+            else
+            {
+                token.type = TOKEN_ARGUMENT;
+            }
+            token.value = word;
+        }
         tokens.push_back(token);
     }
 

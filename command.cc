@@ -1,17 +1,7 @@
-
-/*
- * 
- *
- * Template file.
- * You will need to add more code here to execute the command table.
- *
- * NOTE: You are responsible for fixing any bugs this code may have!
- *
- */
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <errno.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <string.h>
@@ -19,29 +9,150 @@
 #include <fcntl.h>
 #include <time.h>
 #include <glob.h>
-#include <wordexp.h>
 #include <vector>
 #include <string>
-#include <cctype>
 #include <iostream>
-#include <sstream>
 #include "command.h"
 #include "tokenizer.h"
 
+void parse(std::vector<Token> &tokens);
+// PROTOTYPES (later steps add lines below this one)
 
+static bool isWord(const Token &t)
+{
+    return t.type == TOKEN_COMMAND || t.type == TOKEN_ARGUMENT;
+}
+
+static void parseError(const char *msg)
+{
+    fprintf(stderr, "myshell: syntax error: %s\n", msg);
+    Command::_currentCommand.clear();
+}
+
+// BEGIN parse
 void parse(std::vector<Token> &tokens)
 {
-    Command currentCommand;
-    SimpleCommand *currentSimpleCommand = new SimpleCommand();
+    if (tokens.size() <= 1)
+        return;
 
-    currentCommand.execute();
-    /*
-      Implement this function 
-      you must parse for all possible tokens scenario
-      right now command.execute only print the format , you will inject it in your logic.
+    Command &cmd = Command::_currentCommand;
+    SimpleCommand *simple = NULL;
 
-    */
+    for (size_t i = 0; i < tokens.size(); i++)
+    {
+        Token &t = tokens[i];
+
+        switch (t.type)
+        {
+        case TOKEN_COMMAND:
+        case TOKEN_ARGUMENT:
+            if (!simple)
+            {
+                simple = new SimpleCommand();
+                cmd.insertSimpleCommand(simple);
+            }
+            simple->insertArgument(strdup(t.value.c_str()));
+            break;
+
+        case TOKEN_PIPE:
+            if (!simple)
+            {
+                parseError("missing command before '|'");
+                return;
+            }
+            if (!isWord(tokens[i + 1]))
+            {
+                parseError("missing command after '|'");
+                return;
+            }
+            simple = NULL;
+            break;
+
+        case TOKEN_REDIRECT:
+        case TOKEN_APPEND:
+        case TOKEN_INPUT:
+        case TOKEN_ERROR:
+        case TOKEN_REDIRECT_AND_ERROR:
+        {
+            if (!isWord(tokens[i + 1]))
+            {
+                parseError("missing file name after redirection");
+                return;
+            }
+            char *file = strdup(tokens[i + 1].value.c_str());
+
+            if (t.type == TOKEN_INPUT)
+            {
+                if (cmd._inputFile)
+                {
+                    free(file);
+                    parseError("ambiguous input redirection");
+                    return;
+                }
+                cmd._inputFile = file;
+            }
+            else if (t.type == TOKEN_ERROR)
+            {
+                if (cmd._errFile)
+                {
+                    free(file);
+                    parseError("ambiguous error redirection");
+                    return;
+                }
+                cmd._errFile = file;
+            }
+            else
+            {
+                if (cmd._outFile)
+                {
+                    free(file);
+                    parseError("ambiguous output redirection");
+                    return;
+                }
+                cmd._outFile = file;
+                cmd._append = (t.type != TOKEN_REDIRECT);
+                if (t.type == TOKEN_REDIRECT_AND_ERROR)
+                {
+                    if (cmd._errFile)
+                    {
+                        parseError("ambiguous error redirection");
+                        return;
+                    }
+                    cmd._errFile = strdup(file);
+                    cmd._out_error = 1;
+                }
+            }
+            i++;
+            break;
+        }
+
+        case TOKEN_BACKGROUND:
+            if (tokens[i + 1].type != TOKEN_EOF)
+            {
+                parseError("'&' must be the last token");
+                return;
+            }
+            if (!simple)
+            {
+                parseError("missing command before '&'");
+                return;
+            }
+            cmd._background = 1;
+            break;
+
+        case TOKEN_EOF:
+            if (!simple)
+            {
+                parseError("missing command");
+                return;
+            }
+            break;
+        }
+    }
+
+    cmd.execute();
 }
+// END parse
 
 SimpleCommand::SimpleCommand()
 {
@@ -58,23 +169,23 @@ void SimpleCommand::insertArgument(char *argument)
         _arguments = (char **)realloc(_arguments,
                                       _numberOfAvailableArguments * sizeof(char *));
     }
-
     _arguments[_numberOfArguments] = argument;
     _arguments[_numberOfArguments + 1] = NULL;
-
     _numberOfArguments++;
 }
 
 Command::Command()
 {
+    _numberOfSimpleCommands = 0;
     _numberOfAvailableSimpleCommands = 1;
     _simpleCommands = (SimpleCommand **)
-        malloc(_numberOfSimpleCommands * sizeof(SimpleCommand *));
+        malloc(_numberOfAvailableSimpleCommands * sizeof(SimpleCommand *));
 
-    _numberOfSimpleCommands = 0;
     _outFile = 0;
     _inputFile = 0;
     _errFile = 0;
+    _out_error = 0;
+    _append = 0;
     _background = 0;
 }
 
@@ -84,9 +195,8 @@ void Command::insertSimpleCommand(SimpleCommand *simpleCommand)
     {
         _numberOfAvailableSimpleCommands *= 2;
         _simpleCommands = (SimpleCommand **)realloc(_simpleCommands,
-                                                    _numberOfAvailableSimpleCommands * sizeof(SimpleCommand *));
+            _numberOfAvailableSimpleCommands * sizeof(SimpleCommand *));
     }
-
     _simpleCommands[_numberOfSimpleCommands] = simpleCommand;
     _numberOfSimpleCommands++;
 }
@@ -96,33 +206,25 @@ void Command::clear()
     for (int i = 0; i < _numberOfSimpleCommands; i++)
     {
         for (int j = 0; j < _simpleCommands[i]->_numberOfArguments; j++)
-        {
             free(_simpleCommands[i]->_arguments[j]);
-        }
 
         free(_simpleCommands[i]->_arguments);
-        free(_simpleCommands[i]);
+        delete _simpleCommands[i];
     }
 
     if (_outFile)
-    {
         free(_outFile);
-    }
-
     if (_inputFile)
-    {
         free(_inputFile);
-    }
-
     if (_errFile)
-    {
         free(_errFile);
-    }
 
     _numberOfSimpleCommands = 0;
     _outFile = 0;
     _inputFile = 0;
     _errFile = 0;
+    _out_error = 0;
+    _append = 0;
     _background = 0;
 }
 
@@ -138,39 +240,45 @@ void Command::print()
     {
         printf("  %-3d ", i);
         for (int j = 0; j < _simpleCommands[i]->_numberOfArguments; j++)
-        {
             printf("\"%s\" \t", _simpleCommands[i]->_arguments[j]);
-        }
+        printf("\n");
     }
 
-    printf("\n\n");
-    printf("  Output       Input        Error        Err&Out       Background\n");
-    printf("  ------------ ------------ ------------ ------------ ------------\n");
-    printf("  %-12s %-12s %-12s %-12s %-12s\n", _outFile ? _outFile : "default",
-           _inputFile ? _inputFile : "default", _errFile ? _errFile : "default", _out_error == 1 ? _errFile : "default"
-           ,_background ? "YES" : "NO");
+    printf("\n");
+    printf("  Output       Input        Error        Err&Out      Append  Background\n");
+    printf("  ------------ ------------ ------------ ------------ ------- ----------\n");
+    printf("  %-12s %-12s %-12s %-12s %-7s %-10s\n",
+           _outFile ? _outFile : "default",
+           _inputFile ? _inputFile : "default",
+           _errFile ? _errFile : "default",
+           (_out_error && _errFile) ? _errFile : "default",
+           _append ? "YES" : "NO",
+           _background ? "YES" : "NO");
     printf("\n\n");
 }
 
+// BEGIN execute
 void Command::execute()
 {
     print();
-    /*
-        Write your code here
-    */
-
     clear();
-    prompt();
 }
+// END execute
 
+// BEGIN prompt
 void Command::prompt()
 {
-    printf("myshell>");
-    fflush(stdout);
     std::string input;
     while (true)
     {
-        std::getline(std::cin, input); 
+        printf("myshell>");
+        fflush(stdout);
+
+        if (!std::getline(std::cin, input))
+        {
+            printf("\n");
+            break;
+        }
         std::vector<Token> tokens = tokenize(input);
         parse(tokens);
     }
@@ -184,3 +292,4 @@ int main()
     Command::_currentCommand.prompt();
     return 0;
 }
+// END prompt
