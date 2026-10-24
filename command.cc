@@ -359,10 +359,12 @@ static void applyRedirections(Command *c, bool first, bool last)
 }
 // END redirect
 
+
 // BEGIN execute
 void Command::execute()
 {
-    if (_numberOfSimpleCommands == 0)
+    int n = _numberOfSimpleCommands;
+    if (n == 0)
     {
         clear();
         return;
@@ -374,25 +376,60 @@ void Command::execute()
         return;
     }
 
-    fflush(stdout);
-    pid_t pid = fork();
+    std::vector<int> fds(2 * (n - 1));
+    for (int i = 0; i < n - 1; i++)
+    {
+        if (pipe(&fds[2 * i]) < 0)
+        {
+            perror("myshell: pipe");
+            for (int k = 0; k < 2 * i; k++)
+                close(fds[k]);
+            clear();
+            return;
+        }
+    }
 
-    if (pid < 0)
+    fflush(stdout);
+    std::vector<pid_t> pids;
+
+    for (int i = 0; i < n; i++)
     {
-        perror("myshell: fork");
+        pid_t pid = fork();
+        if (pid < 0)
+        {
+            perror("myshell: fork");
+            break;
+        }
+
+        if (pid == 0)
+        {
+            if (i > 0)
+                dup2(fds[2 * (i - 1)], 0);
+            if (i < n - 1)
+                dup2(fds[2 * i + 1], 1);
+
+            for (size_t k = 0; k < fds.size(); k++)
+                close(fds[k]);
+
+            applyRedirections(this, i == 0, i == n - 1);
+            runProgram(_simpleCommands[i]);
+        }
+
+        pids.push_back(pid);
     }
-    else if (pid == 0)
+
+    for (size_t k = 0; k < fds.size(); k++)
+        close(fds[k]);
+
+    if (_background)
     {
-        applyRedirections(this, true, true);
-        runProgram(_simpleCommands[0]);
-    }
-    else if (_background)
-    {
-        printf("[background] pid %d\n", (int)pid);
+        if (!pids.empty())
+            printf("[background] pid %d\n", (int)pids.back());
     }
     else
     {
-        waitForChild(pid);
+        for (size_t k = 0; k < pids.size(); k++)
+            waitForChild(pids[k]);
     }
 
     clear();
