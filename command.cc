@@ -257,13 +257,6 @@ void Command::print()
     printf("\n\n");
 }
 
-// BEGIN execute
-void Command::execute()
-{
-    print();
-    clear();
-}
-// END execute
 
 // BEGIN prompt
 void Command::prompt()
@@ -293,3 +286,73 @@ int main()
     return 0;
 }
 // END prompt
+
+// BEGIN builtin
+static bool runBuiltin(Command *c)
+{
+    (void)c;
+    return false;
+}
+// END builtin
+
+// BEGIN wait
+static void waitForChild(pid_t pid)
+{
+    int status;
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
+    {
+    }
+}
+// END wait
+
+// BEGIN runprogram
+static void runProgram(SimpleCommand *s)
+{
+    execvp(s->_arguments[0], s->_arguments);
+
+    if (errno == ENOENT)
+        fprintf(stderr, "myshell: %s: command not found\n", s->_arguments[0]);
+    else
+        fprintf(stderr, "myshell: %s: %s\n", s->_arguments[0], strerror(errno));
+    _exit(127);
+}
+// END runprogram
+
+// BEGIN execute
+void Command::execute()
+{
+    if (_numberOfSimpleCommands == 0)
+    {
+        clear();
+        return;
+    }
+
+    if (runBuiltin(this))
+    {
+        clear();
+        return;
+    }
+
+    fflush(stdout);
+    pid_t pid = fork();
+
+    if (pid < 0)
+    {
+        perror("myshell: fork");
+    }
+    else if (pid == 0)
+    {
+        runProgram(_simpleCommands[0]);
+    }
+    else if (_background)
+    {
+        printf("[background] pid %d\n", (int)pid);
+    }
+    else
+    {
+        waitForChild(pid);
+    }
+
+    clear();
+}
+// END execute
