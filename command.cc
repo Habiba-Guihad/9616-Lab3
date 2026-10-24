@@ -17,6 +17,9 @@
 
 void parse(std::vector<Token> &tokens);
 // PROTOTYPES (later steps add lines below this one)
+static bool runBuiltin(Command *c);
+static void waitForChild(pid_t pid);
+static void runProgram(SimpleCommand *s);
 
 static bool isWord(const Token &t)
 {
@@ -258,65 +261,9 @@ void Command::print()
 }
 
 
-// BEGIN prompt
-void Command::prompt()
-{
-    std::string input;
-    while (true)
-    {
-        printf("myshell>");
-        fflush(stdout);
 
-        if (!std::getline(std::cin, input))
-        {
-            printf("\n");
-            break;
-        }
-        std::vector<Token> tokens = tokenize(input);
-        parse(tokens);
-    }
-}
 
-Command Command::_currentCommand;
-SimpleCommand *Command::_currentSimpleCommand;
 
-int main()
-{
-    Command::_currentCommand.prompt();
-    return 0;
-}
-// END prompt
-
-// BEGIN builtin
-static bool runBuiltin(Command *c)
-{
-    (void)c;
-    return false;
-}
-// END builtin
-
-// BEGIN wait
-static void waitForChild(pid_t pid)
-{
-    int status;
-    while (waitpid(pid, &status, 0) < 0 && errno == EINTR)
-    {
-    }
-}
-// END wait
-
-// BEGIN runprogram
-static void runProgram(SimpleCommand *s)
-{
-    execvp(s->_arguments[0], s->_arguments);
-
-    if (errno == ENOENT)
-        fprintf(stderr, "myshell: %s: command not found\n", s->_arguments[0]);
-    else
-        fprintf(stderr, "myshell: %s: %s\n", s->_arguments[0], strerror(errno));
-    _exit(127);
-}
-// END runprogram
 
 
 // BEGIN redirect
@@ -435,3 +382,132 @@ void Command::execute()
     clear();
 }
 // END execute
+
+// BEGIN sigchld
+static char g_logPath[1024] = "myshell.log";
+
+static void logChild(pid_t pid)
+{
+    int fd = open(g_logPath, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0)
+        return;
+
+    char line[128];
+    int len = snprintf(line, sizeof(line), "Child process %d terminated\n", (int)pid);
+    if (write(fd, line, len) < 0)
+    {
+    }
+    close(fd);
+}
+
+static void childHandler(int sig)
+{
+    (void)sig;
+    int saved = errno;
+    pid_t pid;
+    while ((pid = waitpid(-1, NULL, WNOHANG)) > 0)
+        logChild(pid);
+    errno = saved;
+}
+// END sigchld
+
+// BEGIN builtin
+static bool runBuiltin(Command *c)
+{
+    if (c->_numberOfSimpleCommands != 1)
+        return false;
+
+    char **args = c->_simpleCommands[0]->_arguments;
+
+    if (strcmp(args[0], "exit") == 0)
+    {
+        printf("Good bye!!\n");
+        c->clear();
+        exit(0);
+    }
+
+    if (strcmp(args[0], "cd") == 0)
+    {
+        const char *dir = args[1];
+        if (dir == NULL)
+            dir = getenv("HOME");
+
+        if (dir == NULL || chdir(dir) != 0)
+            fprintf(stderr, "myshell: cd: %s: %s\n",
+                    dir ? dir : "(HOME not set)", strerror(errno));
+        return true;
+    }
+
+    return false;
+}
+// END builtin
+
+// BEGIN wait
+static void waitForChild(pid_t pid)
+{
+    int status;
+    pid_t r;
+    do
+    {
+        r = waitpid(pid, &status, 0);
+    } while (r < 0 && errno == EINTR);
+
+    if (r > 0)
+        logChild(r);
+}
+// END wait
+
+// BEGIN runprogram
+static void runProgram(SimpleCommand *s)
+{
+    signal(SIGINT, SIG_DFL);
+
+    execvp(s->_arguments[0], s->_arguments);
+
+    if (errno == ENOENT)
+        fprintf(stderr, "myshell: %s: command not found\n", s->_arguments[0]);
+    else
+        fprintf(stderr, "myshell: %s: %s\n", s->_arguments[0], strerror(errno));
+    _exit(127);
+}
+// END runprogram
+
+// BEGIN prompt
+void Command::prompt()
+{
+    std::string input;
+    while (true)
+    {
+        printf("myshell>");
+        fflush(stdout);
+
+        if (!std::getline(std::cin, input))
+        {
+            printf("\n");
+            break;
+        }
+        std::vector<Token> tokens = tokenize(input);
+        parse(tokens);
+    }
+}
+
+Command Command::_currentCommand;
+SimpleCommand *Command::_currentSimpleCommand;
+
+int main()
+{
+    signal(SIGINT, SIG_IGN);
+
+    struct sigaction sa;
+    sa.sa_handler = childHandler;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART | SA_NOCLDSTOP;
+    sigaction(SIGCHLD, &sa, NULL);
+
+    if (getcwd(g_logPath, sizeof(g_logPath) - 16) != NULL)
+        strcat(g_logPath, "/myshell.log");
+
+    Command::_currentCommand.prompt();
+    return 0;
+}
+// END prompt
